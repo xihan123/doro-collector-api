@@ -16,3 +16,4 @@ opencv-python-headless
 numpy
 psycopg
 starlette
+pydantic-settings
