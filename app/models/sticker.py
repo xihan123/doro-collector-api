@@ -1,7 +1,8 @@
 import time
 import uuid
 
-from sqlalchemy import Column, String, Integer, Float, Boolean, ARRAY, BigInteger
+from sqlalchemy import Column, String, Integer, Float, Boolean, BigInteger
+from sqlalchemy.dialects.postgresql import ARRAY
 
 from app.db.database import Base
 
