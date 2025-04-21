@@ -1,14 +1,19 @@
+import logging
 from typing import List, Dict, Any, Optional, Tuple
 
 from sqlalchemy import desc, func
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app.db.database import transaction_context
 from app.models.sticker import Sticker
 from app.models.user_action import UserAction
 from app.schemas.sticker import StickerUpdate
 from app.services.doro_classifier import doro_classifier
 from app.services.image_upload_service import image_upload_service
 from app.services.ocr_service import ocr_service
+
+logger = logging.getLogger(__name__)
 
 
 class StickerService:
