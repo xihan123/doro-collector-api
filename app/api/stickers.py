@@ -14,7 +14,7 @@ from app.services.sticker_service import sticker_service
 router = APIRouter()
 
 
-@router.post("/upload/", response_model=UploadResponse)
+@router.post("/upload", response_model=UploadResponse)
 async def upload_sticker(file: UploadFile = File(...), db: Session = Depends(get_db)):
     """上传表情包"""
     # 检查文件类型
