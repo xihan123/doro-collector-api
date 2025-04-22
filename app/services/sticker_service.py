@@ -1,3 +1,4 @@
+import hashlib
 import logging
 from typing import List, Dict, Any, Optional, Tuple
 
@@ -20,7 +21,20 @@ class StickerService:
     def create_sticker(self, db: Session, image_bytes: bytes) -> Dict[str, Any]:
         """处理上传的图片并创建表情包记录"""
         try:
-            # 步骤1: 使用DORO分类器检查是否为DORO表情包
+            # 1: 计算MD5
+            md5_hash = hashlib.md5(image_bytes).hexdigest()
+            logger.debug(f"MD5: {md5_hash}")
+
+            # 2: 检查MD5是否已存在
+            existing_sticker = db.query(Sticker).filter(Sticker.md5 == md5_hash).first()
+            if existing_sticker:
+                return {
+                    "success": False,
+                    "message": "该表情包已存在",
+                    "sticker": existing_sticker.as_dict()
+                }
+
+            # 3: 使用DORO分类器检查是否为DORO表情包
             doro_result = doro_classifier.predict(image_bytes)
             logger.debug(f"DORO分类结果: {doro_result}")
 
@@ -31,11 +45,11 @@ class StickerService:
                     "details": doro_result
                 }
 
-            # 步骤2: 使用AI直接生成描述（同时检测是否有文字）
+            # 4: 使用AI直接生成描述（同时检测是否有文字）
             description, has_text = ocr_service.generate_description_with_text_detection(image_bytes)
             logger.debug(f"OCR识别结果: 描述={description}, 有文字={has_text}")
 
-            # 步骤3: 上传到图床
+            # 5: 上传到图床
             upload_result = image_upload_service.upload_image(image_bytes)
             logger.debug(f"图片上传结果: {upload_result}")
 
@@ -44,15 +58,6 @@ class StickerService:
                     "success": False,
                     "message": "上传到图床失败",
                     "details": upload_result
-                }
-
-            # 步骤4: 检查MD5是否已存在
-            existing_sticker = db.query(Sticker).filter(Sticker.md5 == upload_result["md5"]).first()
-            if existing_sticker:
-                return {
-                    "success": False,
-                    "message": "该表情包已存在",
-                    "sticker": existing_sticker.as_dict()
                 }
 
             # 步骤5: 创建数据库记录
@@ -67,7 +72,6 @@ class StickerService:
                     md5=upload_result["md5"],
                     url=upload_result["url"],
                     description=description,
-                    has_ocr_text=has_text,
                     doro_confidence=float(doro_result["confidence"]),
                     tags=tags,
                     width=upload_result.get("width"),

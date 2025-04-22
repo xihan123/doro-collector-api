@@ -8,7 +8,6 @@ class StickerBase(BaseModel):
     description: str
     url: str
     md5: str
-    has_ocr_text: bool = False
     doro_confidence: float = 0.0
     tags: List[str] = []
     width: Optional[int] = None
