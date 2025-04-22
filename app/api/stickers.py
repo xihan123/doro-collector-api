@@ -7,9 +7,8 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db, get_client_ip
-from app.models.sticker import Sticker
 from app.schemas.sticker import StickerResponse, StickerUpdate, StickerPagination, UploadResponse, \
-    StickerDescriptionUpdate
+    StickerDescriptionUpdate, StickerTagsUpdate
 from app.services.sticker_service import sticker_service
 
 router = APIRouter()
@@ -39,12 +38,11 @@ async def upload_sticker(file: UploadFile = File(...), db: Session = Depends(get
 
     # 转换结果
     sticker_dict = result["sticker"]
-    sticker = db.query(Sticker).filter(Sticker.id == sticker_dict["id"]).first()
 
     return UploadResponse(
         success=True,
         message="表情包上传成功",
-        sticker=StickerResponse.from_orm(sticker) if sticker else None
+        sticker=StickerResponse.model_validate(sticker_dict) if sticker_dict else None
     )
 
 
@@ -157,6 +155,19 @@ def get_popular_tags(
 ):
     """获取热门标签"""
     return sticker_service.get_popular_tags(db, limit)
+
+
+@router.post("/{sticker_id}/tag")
+def add_tag_to_sticker(
+        sticker_id: str = Path(..., description="表情包ID"),
+        tag_update: StickerTagsUpdate = Body(..., description="标签"),
+        db: Session = Depends(get_db)
+):
+    """给表情包添加标签"""
+    result = sticker_service.add_tag_to_sticker(db, sticker_id, tag_update.tag_name)
+    if not result["success"]:
+        raise HTTPException(status_code=404, detail=result["message"])
+    return result
 
 
 @router.post("/download/batch/")

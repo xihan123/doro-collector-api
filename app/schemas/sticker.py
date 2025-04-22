@@ -52,3 +52,7 @@ class UploadResponse(BaseModel):
 
 class StickerDescriptionUpdate(BaseModel):
     description: str
+
+
+class StickerTagsUpdate(BaseModel):
+    tag_name: str
