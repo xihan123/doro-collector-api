@@ -2,12 +2,13 @@ import hashlib
 import logging
 from typing import List, Dict, Any, Optional, Tuple
 
-from sqlalchemy import desc, func
+from sqlalchemy import desc
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.db.database import transaction_context
 from app.models.sticker import Sticker
+from app.models.tag import Tag
 from app.models.user_action import UserAction
 from app.schemas.sticker import StickerUpdate
 from app.services.doro_classifier import doro_classifier
@@ -62,18 +63,12 @@ class StickerService:
 
             # 步骤5: 创建数据库记录
             with transaction_context(db) as tx:
-                # 提取标签
-                tags = []
-                if has_text:
-                    tags.append("有文字")
-
                 # 创建Sticker对象
                 db_sticker = Sticker(
                     md5=upload_result["md5"],
                     url=upload_result["url"],
                     description=description,
                     doro_confidence=float(doro_result["confidence"]),
-                    tags=tags,
                     width=upload_result.get("width"),
                     height=upload_result.get("height"),
                     file_size=upload_result.get("size")
@@ -82,6 +77,17 @@ class StickerService:
                 # 保存到数据库
                 tx.add(db_sticker)
                 tx.flush()  # 确保可以获取ID
+
+                # 标签处理逻辑
+                if has_text:
+                    # 获取或创建"有文字"标签
+                    text_tag = tx.merge(Tag(name="有文字", usage_count=0))
+
+                    # 建立关联关系
+                    db_sticker.tags.append(text_tag)
+
+                    # 更新使用计数
+                    text_tag.usage_count += 1
 
                 return {
                     "success": True,
@@ -156,20 +162,66 @@ class StickerService:
         """根据ID获取表情包"""
         return db.query(Sticker).filter(Sticker.id == sticker_id).first()
 
-    def get_popular_tags(self, db: Session, limit: int = 20) -> List[Dict[str, Any]]:
+    def get_popular_tags(
+            self, db: Session,
+            limit: int = 10,
+            sort_order: str = "desc"
+    ) -> List[Dict[str, Any]]:
         """获取热门标签"""
         try:
-            # PostgreSQL查询 - 从tags数组中展开标签并统计出现次数
-            result = db.query(
-                func.unnest(Sticker.tags).label('tag'),
-                func.count().label('count')
-            ).group_by('tag').order_by(desc('count')).limit(limit).all()
+            # 基本查询与原来的get_stickers相同
+            query = db.query(Tag.name, Tag.usage_count)
 
-            # 转换查询结果为字典列表
-            return [{"tag": r.tag, "count": r.count} for r in result]
+            # 应用排序
+            if sort_order.lower() == "desc":
+                query = query.order_by(desc(getattr(Tag, "usage_count")))
+
+            # 应用分页
+            tags = query.offset(0).limit(limit).all()
+
+            # 处理结果
+            result = []
+            for tag in tags:
+                result.append({
+                    "tag": tag.name,
+                    "count": tag.usage_count
+                })
+
+            return result
         except Exception as e:
             print(f"获取热门标签时出错: {str(e)}")
             return []
+
+    def add_tag_to_sticker(self, db: Session, sticker_id: int, tag_name: str) -> Dict[str, Any]:
+        """原子性为表情包创建标签"""
+        try:
+            with transaction_context(db) as tx:
+                # 获取表情包
+                db_sticker = tx.query(Sticker).filter(Sticker.id == sticker_id).first()
+                if not db_sticker:
+                    return {"success": False, "message": "表情包不存在"}
+
+                # 获取或创建标签
+                text_tag = tx.merge(Tag(name=tag_name, usage_count=0))
+
+                # 建立关联关系
+                db_sticker.tags.append(text_tag)
+
+                # 更新使用计数
+                text_tag.usage_count += 1
+
+                return {
+                    "success": True,
+                    "message": "标签创建成功",
+                    "sticker": db_sticker.as_dict(),
+                    "action": "tag"
+                }
+        except SQLAlchemyError as e:
+            logger.error(f"创建标签时发生数据库错误: {e}")
+            return {"success": False, "message": f"数据库操作失败: {str(e)}"}
+        except Exception as e:
+            logger.error(f"创建标签时发生错误: {e}")
+            return {"success": False, "message": f"操作失败: {str(e)}"}
 
     def get_sticker_by_md5(self, db: Session, md5: str) -> Optional[Sticker]:
         """根据MD5获取表情包"""
@@ -260,56 +312,61 @@ class StickerService:
 
     def dislike_sticker(self, db: Session, sticker_id: int, ip_address: str) -> Dict[str, Any]:
         """对表情包点踩"""
-        db_sticker = self.get_sticker(db, sticker_id)
-        if not db_sticker:
-            return {"success": False, "message": "表情包不存在"}
+        try:
+            with transaction_context(db) as tx:
+                db_sticker = tx.query(Sticker).filter(Sticker.id == sticker_id).first()
+                if not db_sticker:
+                    return {"success": False, "message": "表情包不存在"}
 
-        # 检查用户是否已对此表情包操作过
-        existing_action = db.query(UserAction).filter(
-            UserAction.sticker_id == sticker_id,
-            UserAction.ip_address == ip_address
-        ).first()
+                # 检查用户是否已对此表情包操作过
+                existing_action = tx.query(UserAction).filter(
+                    UserAction.sticker_id == sticker_id,
+                    UserAction.ip_address == ip_address
+                ).first()
 
-        if existing_action:
-            if existing_action.action == 'dislike':
-                # 如果已经点踩，则取消点踩
-                db_sticker.dislikes = max(0, db_sticker.dislikes - 1)
-                db.delete(existing_action)
-                db.commit()
-                return {
-                    "success": True,
-                    "message": "取消点踩成功",
-                    "sticker": db_sticker.as_dict(),
-                    "action": None
-                }
-            else:
-                # 如果已经点赞，则切换为点踩
-                db_sticker.likes = max(0, db_sticker.likes - 1)
-                db_sticker.dislikes += 1
-                existing_action.action = 'dislike'
-                db.commit()
-                return {
-                    "success": True,
-                    "message": "从点赞切换为点踩成功",
-                    "sticker": db_sticker.as_dict(),
-                    "action": "dislike"
-                }
-        else:
-            # 新增点踩记录
-            db_sticker.dislikes += 1
-            new_action = UserAction(
-                ip_address=ip_address,
-                sticker_id=sticker_id,
-                action='dislike'
-            )
-            db.add(new_action)
-            db.commit()
-            return {
-                "success": True,
-                "message": "点踩成功",
-                "sticker": db_sticker.as_dict(),
-                "action": "dislike"
-            }
+                if existing_action:
+                    if existing_action.action == 'dislike':
+                        # 如果已经点踩，则取消点踩
+                        db_sticker.dislikes = max(0, db_sticker.dislikes - 1)
+                        tx.delete(existing_action)
+                        return {
+                            "success": True,
+                            "message": "取消点踩成功",
+                            "sticker": db_sticker.as_dict(),
+                            "action": None
+                        }
+                    else:
+                        # 如果已经点赞，则切换为点踩
+                        db_sticker.likes = max(0, db_sticker.likes - 1)
+                        db_sticker.dislikes += 1
+                        existing_action.action = 'dislike'
+                        return {
+                            "success": True,
+                            "message": "从点赞切换为点踩成功",
+                            "sticker": db_sticker.as_dict(),
+                            "action": "dislike"
+                        }
+                else:
+                    # 新增点踩记录
+                    db_sticker.dislikes += 1
+                    new_action = UserAction(
+                        ip_address=ip_address,
+                        sticker_id=sticker_id,
+                        action='dislike'
+                    )
+                    tx.add(new_action)
+                    return {
+                        "success": True,
+                        "message": "点踩成功",
+                        "sticker": db_sticker.as_dict(),
+                        "action": "dislike"
+                    }
+        except SQLAlchemyError as e:
+            logger.error(f"点踩操作数据库错误: {e}")
+            return {"success": False, "message": f"数据库操作失败: {str(e)}"}
+        except Exception as e:
+            logger.error(f"点踩操作错误: {e}")
+            return {"success": False, "message": f"操作失败: {str(e)}"}
 
     def get_stickers_with_user_actions(
             self,
