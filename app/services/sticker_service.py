@@ -369,6 +369,30 @@ class StickerService:
         stickers = db.query(Sticker).filter(Sticker.id.in_(sticker_ids)).all()
         return [sticker.as_dict() for sticker in stickers]
 
+    def update_sticker_description(self, db: Session, sticker_id: int, description: str) -> Dict[str, Any]:
+        """更新表情包描述"""
+        try:
+            db_sticker = db.query(Sticker).filter(Sticker.id == sticker_id).first()
+            if not db_sticker:
+                return {"success": False, "message": "表情包不存在"}
+
+            db_sticker.description = description
+            db.commit()
+            db.refresh(db_sticker)
+
+            return {
+                "success": True,
+                "message": "表情包描述更新成功",
+                "sticker": db_sticker.as_dict(),
+                "action": "description"
+            }
+        except SQLAlchemyError as e:
+            logger.error(f"更新表情包描述时发生数据库错误: {e}")
+            return {"success": False, "message": f"数据库操作失败: {str(e)}"}
+        except Exception as e:
+            logger.error(f"更新表情包描述时发生错误: {e}")
+            return {"success": False, "message": f"操作失败: {str(e)}"}
+
 
 # 创建单例实例
 sticker_service = StickerService()

@@ -2,13 +2,14 @@ import io
 import zipfile
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, Path, Request
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, Path, Request, Body
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db, get_client_ip
 from app.models.sticker import Sticker
-from app.schemas.sticker import StickerResponse, StickerUpdate, StickerPagination, UploadResponse
+from app.schemas.sticker import StickerResponse, StickerUpdate, StickerPagination, UploadResponse, \
+    StickerDescriptionUpdate
 from app.services.sticker_service import sticker_service
 
 router = APIRouter()
@@ -201,3 +202,18 @@ def download_batch_stickers(
         media_type="application/zip",
         headers={"Content-Disposition": f"attachment; filename=doro_stickers.zip"}
     )
+
+
+@router.patch("/{sticker_id}/description")
+def update_sticker_description(
+        sticker_id: str = Path(..., description="表情包ID"),
+        description_update: StickerDescriptionUpdate = Body(...),
+        db: Session = Depends(get_db)
+):
+    """修改表情包的描述"""
+    result = sticker_service.update_sticker_description(
+        db, sticker_id, description_update.description
+    )
+    if not result["success"]:
+        raise HTTPException(status_code=404, detail=result["message"])
+    return result
