@@ -2,9 +2,10 @@ import time
 import uuid
 
 from sqlalchemy import Column, String, Integer, Float, BigInteger
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.orm import relationship
 
 from app.db.database import Base
+from app.models.tag import sticker_tags_association_table
 
 
 class Sticker(Base):
@@ -20,11 +21,25 @@ class Sticker(Base):
     likes = Column(Integer, default=0)
     dislikes = Column(Integer, default=0)
     doro_confidence = Column(Float, default=0.0)
-    tags = Column(ARRAY(String), default=list)
+    tags = relationship("Tag", secondary=sticker_tags_association_table, backref="stickers", cascade="merge")
     width = Column(Integer, nullable=True)
     height = Column(Integer, nullable=True)
     file_size = Column(Integer, nullable=True)
 
     # 将模型实例转换为字典
     def as_dict(self):
-        return {c.name: getattr(self, c.name) for c in self.__table__.columns}
+        return {
+            "id": self.id,
+            "md5": self.md5,
+            "url": self.url,
+            "description": self.description,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "likes": self.likes,
+            "dislikes": self.dislikes,
+            "doro_confidence": self.doro_confidence,
+            "tags": [tag.name for tag in self.tags],
+            "width": self.width,
+            "height": self.height,
+            "file_size": self.file_size
+        }
