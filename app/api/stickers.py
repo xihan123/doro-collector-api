@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.db.database import get_db, get_client_ip
 from app.schemas.sticker import StickerResponse, StickerUpdate, StickerPagination, UploadResponse, \
-    StickerDescriptionUpdate, StickerTagsUpdate
+    StickerDescriptionUpdate, StickerTagUpdate, StickerTagsUpdate
 from app.services.sticker_service import sticker_service
 
 router = APIRouter()
@@ -94,13 +94,13 @@ def get_random_stickers(
     return [StickerResponse.from_orm(s) for s in stickers]
 
 
-@router.get("/{sticker_id}", response_model=StickerResponse)
+@router.get("/{sticker_id}")
 def get_sticker(sticker_id: str = Path(..., description="表情包ID"), db: Session = Depends(get_db)):
     """获取单个表情包"""
     sticker = sticker_service.get_sticker(db, sticker_id)
     if not sticker:
         raise HTTPException(status_code=404, detail="表情包不存在")
-    return StickerResponse.from_orm(sticker)
+    return sticker.as_dict()
 
 
 @router.put("/{sticker_id}", response_model=StickerResponse)
@@ -160,11 +160,24 @@ def get_popular_tags(
 @router.post("/{sticker_id}/tag")
 def add_tag_to_sticker(
         sticker_id: str = Path(..., description="表情包ID"),
-        tag_update: StickerTagsUpdate = Body(..., description="标签"),
+        tag_update: StickerTagUpdate = Body(..., description="标签"),
         db: Session = Depends(get_db)
 ):
     """给表情包添加标签"""
     result = sticker_service.add_tag_to_sticker(db, sticker_id, tag_update.tag_name)
+    if not result["success"]:
+        raise HTTPException(status_code=404, detail=result["message"])
+    return result
+
+
+@router.post("/{sticker_id}/tags")
+def update_tags_to_sticker(
+        sticker_id: str = Path(..., description="表情包ID"),
+        tag_update: StickerTagsUpdate = Body(..., description="标签"),
+        db: Session = Depends(get_db)
+):
+    """更新表情包的标签"""
+    result = sticker_service.update_tags_to_sticker(db, sticker_id, tag_update.tags)
     if not result["success"]:
         raise HTTPException(status_code=404, detail=result["message"])
     return result
@@ -227,4 +240,4 @@ def update_sticker_description(
     )
     if not result["success"]:
         raise HTTPException(status_code=404, detail=result["message"])
-    return result
+    return result["sticker"]

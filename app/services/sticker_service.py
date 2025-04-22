@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.db.database import transaction_context
 from app.models.sticker import Sticker
-from app.models.tag import Tag
+from app.models.tag import Tag, sticker_tags_association_table
 from app.models.user_action import UserAction
 from app.schemas.sticker import StickerUpdate
 from app.services.doro_classifier import doro_classifier
@@ -81,7 +81,12 @@ class StickerService:
                 # 标签处理逻辑
                 if has_text:
                     # 获取或创建"有文字"标签
-                    text_tag = tx.merge(Tag(name="有文字", usage_count=0))
+                    text_tag = tx.query(Tag).filter(Tag.name == "有文字").first()
+                    if not text_tag:
+                        text_tag = Tag(name="有文字", usage_count=0)
+                        tx.add(text_tag)
+                        tx.flush()  # 确保可以获取新标签的ID
+                    # text_tag = tx.merge(Tag(name="有文字", usage_count=0))
 
                     # 建立关联关系
                     db_sticker.tags.append(text_tag)
@@ -158,7 +163,7 @@ class StickerService:
             logger.error(f"获取表情包列表时发生错误: {e}")
             raise
 
-    def get_sticker(self, db: Session, sticker_id: int) -> Optional[Sticker]:
+    def get_sticker(self, db: Session, sticker_id: str) -> Optional[Sticker]:
         """根据ID获取表情包"""
         return db.query(Sticker).filter(Sticker.id == sticker_id).first()
 
@@ -202,7 +207,12 @@ class StickerService:
                     return {"success": False, "message": "表情包不存在"}
 
                 # 获取或创建标签
-                text_tag = tx.merge(Tag(name=tag_name, usage_count=0))
+                text_tag = tx.query(Tag).filter(Tag.name == tag_name).first()
+                if not text_tag:
+                    text_tag = Tag(name=tag_name, usage_count=0)
+                    tx.add(text_tag)
+                    tx.flush()  # 确保可以获取新标签的ID
+                # text_tag = tx.merge(Tag(name=tag_name, usage_count=0))
 
                 # 建立关联关系
                 db_sticker.tags.append(text_tag)
@@ -221,6 +231,43 @@ class StickerService:
             return {"success": False, "message": f"数据库操作失败: {str(e)}"}
         except Exception as e:
             logger.error(f"创建标签时发生错误: {e}")
+            return {"success": False, "message": f"操作失败: {str(e)}"}
+
+    def update_tags_to_sticker(self, db: Session, sticker_id: int, tags: list[str]) -> Dict[str, Any]:
+        """更新表情包的标签"""
+        try:
+            with transaction_context(db) as tx:
+                # 获取表情包
+                db_sticker = tx.query(Sticker).filter(Sticker.id == sticker_id).first()
+                if not db_sticker:
+                    return {"success": False, "message": "表情包不存在"}
+
+                # 清除现有标签
+                db_sticker.tags.clear()
+
+                # 遍历标签列表，获取或创建标签
+                for tag_name in tags:
+                    # 获取或创建标签
+                    text_tag = tx.query(Tag).filter(Tag.name == tag_name).first()
+                    if not text_tag:
+                        text_tag = Tag(name=tag_name, usage_count=0)
+                        tx.add(text_tag)
+                        tx.flush()  # 确保可以获取新标签的ID
+
+                    # 更新关联关系
+                    db_sticker.tags.append(text_tag)
+
+                return {
+                    "success": True,
+                    "message": "标签更新成功",
+                    "sticker": db_sticker.as_dict(),
+                    "action": "tag"
+                }
+        except SQLAlchemyError as e:
+            logger.error(f"更新标签时发生数据库错误: {e}")
+            return {"success": False, "message": f"数据库操作失败: {str(e)}"}
+        except Exception as e:
+            logger.error(f"更新标签时发生错误: {e}")
             return {"success": False, "message": f"操作失败: {str(e)}"}
 
     def get_sticker_by_md5(self, db: Session, md5: str) -> Optional[Sticker]:
@@ -389,17 +436,30 @@ class StickerService:
 
         # 应用标签过滤
         if tags:
-            for tag in tags:
-                query = query.filter(Sticker.tags.contains([tag]))
+            # 创建子查询获取包含任意指定标签的sticker_id
+            subquery = (
+                db.query(sticker_tags_association_table.c.sticker_id)
+                .join(Tag, Tag.id == sticker_tags_association_table.c.tag_id)
+                .filter(Tag.name.in_(tags))
+                .distinct()  # 添加distinct避免重复
+            ).subquery()
+
+            query = query.join(subquery, Sticker.id == subquery.c.sticker_id)
 
         # 计算总数
         total = query.count()
 
         # 应用排序
+        sort_column = {
+            "created_at": Sticker.created_at,
+            "likes": Sticker.likes,
+            "dislikes": Sticker.dislikes
+        }.get(sort_by, Sticker.created_at)
         if sort_order.lower() == "desc":
-            query = query.order_by(desc(getattr(Sticker, sort_by)))
+
+            query = query.order_by(desc(sort_column))
         else:
-            query = query.order_by(getattr(Sticker, sort_by))
+            query = query.order_by(sort_column)
 
         # 应用分页
         stickers = query.offset(skip).limit(limit).all()

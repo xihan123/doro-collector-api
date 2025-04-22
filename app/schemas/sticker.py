@@ -54,5 +54,9 @@ class StickerDescriptionUpdate(BaseModel):
     description: str
 
 
-class StickerTagsUpdate(BaseModel):
+class StickerTagUpdate(BaseModel):
     tag_name: str
+
+
+class StickerTagsUpdate(BaseModel):
+    tags: List[str]

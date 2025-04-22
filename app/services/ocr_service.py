@@ -132,7 +132,7 @@ class OCRService:
                             },
                             {
                                 "type": "text",
-                                "text": "请为这个表情包提取所有文本内容。请回复JSON格式，包含两个字段：\"description\"(表情包文本，不超过10个字)和\"has_text\"(布尔值，表示表情包中是否包含可识别的文字)"
+                                "text": "请为这个表情包提取所有文本内容。如果没有则返回无,请回复JSON格式，包含两个字段：\"description\"(表情包文本，不超过10个字)和\"has_text\"(布尔值，表示表情包中是否包含可识别的文字)"
                             }
                         ]
                     }
@@ -164,7 +164,7 @@ class OCRService:
                 has_text = "文字" in reply_text or "字" in reply_text
 
             # 确保描述不为空
-            if not description or description.strip() == "":
+            if not description or description.strip() == "" or description == "无":
                 description = "野生的doro表情包"
 
             # 限制描述长度
