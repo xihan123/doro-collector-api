@@ -369,6 +369,16 @@ class StickerService:
         stickers = db.query(Sticker).filter(Sticker.id.in_(sticker_ids)).all()
         return [sticker.as_dict() for sticker in stickers]
 
+    def update_sticker_description(self, db: Session, sticker_id: int, description: str) -> Optional[Sticker]:
+        """更新表情包描述"""
+        sticker = self.get_sticker(db, sticker_id)
+        if not sticker: return None
+
+        sticker.description = description
+        db.commit()
+        db.refresh(sticker)
+        return sticker
+
 
 # 创建单例实例
 sticker_service = StickerService()

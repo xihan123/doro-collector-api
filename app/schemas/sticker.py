@@ -49,3 +49,16 @@ class UploadResponse(BaseModel):
     success: bool
     message: str
     sticker: Optional[StickerResponse] = None
+
+
+class StickerDescriptionUpdate(BaseModel):
+    description: str
+
+
+class DescriptionCheckRequest(BaseModel):
+    description: str
+
+
+class DescriptionCheckResponse(BaseModel):
+    is_suitable: bool
+    reason: Optional[str] = None
