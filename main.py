@@ -16,7 +16,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler("app.log")
+        # logging.FileHandler("app.log")
     ]
 )
 logger = logging.getLogger(__name__)
