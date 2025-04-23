@@ -1,11 +1,13 @@
 import hashlib
 import logging
+import os
 from typing import List, Dict, Any, Optional, Tuple
 
 from sqlalchemy import desc
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.db.database import transaction_context
 from app.models.sticker import Sticker
 from app.models.tag import Tag, sticker_tags_association_table
@@ -61,7 +63,20 @@ class StickerService:
                     "details": upload_result
                 }
 
-            # 步骤5: 创建数据库记录
+            # 6: 保存一份MD5+原后缀到本地PIC_DIR目录下
+            if settings.PIC_DIR and settings.PIC_DIR != "":
+                try:
+                    # 获取文件后缀
+                    file_extension = upload_result["url"].split(".")[-1]
+                    file_path = os.path.join(settings.PIC_DIR, f"{md5_hash}.{file_extension}")
+
+                    # 保存文件
+                    with open(file_path, "wb") as f:
+                        f.write(image_bytes)
+                except Exception as e:
+                    logger.error(f"保存图片到本地失败: {str(e)}")
+
+            # 7: 创建数据库记录
             with transaction_context(db) as tx:
                 # 创建Sticker对象
                 db_sticker = Sticker(

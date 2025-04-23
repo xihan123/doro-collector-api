@@ -37,6 +37,9 @@ async def lifespan(app: FastAPI):
 
     # 确保临时目录存在
     os.makedirs(settings.TEMP_DIR, exist_ok=True)
+    # 确保图片目录存在
+    if settings.PIC_DIR and settings.PIC_DIR != "":
+        os.makedirs(settings.PIC_DIR, exist_ok=True)
 
     yield
 

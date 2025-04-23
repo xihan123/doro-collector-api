@@ -44,6 +44,7 @@ class Settings(BaseSettings):
 
     # 其他设置
     TEMP_DIR: str = os.getenv("TEMP_DIR", "temp")
+    PIC_DIR: str = os.getenv("PIC_DIR", "")
 
     class Config:
         env_file = ".env"
