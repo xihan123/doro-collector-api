@@ -427,6 +427,11 @@ class StickerService:
             tags: Optional[List[str]] = None
     ) -> Tuple[List[Dict[str, Any]], int]:
         """获取表情包列表，并包含当前用户的操作状态"""
+        # 使用安全的属性访问，防止SQL注入
+        allowed_sort_fields = {"created_at", "likes", "dislikes"}
+        if sort_by not in allowed_sort_fields:
+            sort_by = "created_at"
+
         # 基本查询与原来的get_stickers相同
         query = db.query(Sticker)
 
@@ -450,16 +455,10 @@ class StickerService:
         total = query.count()
 
         # 应用排序
-        sort_column = {
-            "created_at": Sticker.created_at,
-            "likes": Sticker.likes,
-            "dislikes": Sticker.dislikes
-        }.get(sort_by, Sticker.created_at)
         if sort_order.lower() == "desc":
-
-            query = query.order_by(desc(sort_column))
+            query = query.order_by(desc(getattr(Sticker, sort_by)))
         else:
-            query = query.order_by(sort_column)
+            query = query.order_by(getattr(Sticker, sort_by))
 
         # 应用分页
         stickers = query.offset(skip).limit(limit).all()
