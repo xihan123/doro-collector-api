@@ -1,6 +1,6 @@
 # 修改后的 Dockerfile
 ARG PYTHON_VERSION=3.13
-FROM docker.xihan.website/python:${PYTHON_VERSION}-slim AS base
+FROM python:${PYTHON_VERSION}-slim AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
