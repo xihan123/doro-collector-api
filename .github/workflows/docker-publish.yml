@@ -1,0 +1,47 @@
+name: Build and Push Docker Image to GitHub Packages
+
+on:
+  push:
+    branches: [ "master" ] # 当推送到 main 分支时触发
+  workflow_dispatch: # 允许手动触发
+
+env:
+  # 使用你的 GitHub 用户名/组织名 和 仓库名 (会自动小写)
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/${{ github.repository }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    # 需要权限来读取仓库内容并写入 GitHub Packages
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          # 使用 GITHUB_TOKEN 进行身份验证
+          username: ${{ github.actor }} # 通常是你的 GitHub 用户名
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=branch,pattern=master,value=latest
+            type=sha,format=short
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: . # Dockerfile 的上下文路径 (仓库根目录)
+          push: true # 推送镜像
+          tags: ${{ steps.meta.outputs.tags }} # 使用上一步生成的标签
+          labels: ${{ steps.meta.outputs.labels }} # 使用上一步生成的标签
