@@ -2,7 +2,7 @@ name: Build and Push Docker Image to GitHub Packages
 
 on:
   push:
-    branches: [ "master" ] # 当推送到 main 分支时触发
+    branches: [ "master" ]
   workflow_dispatch: # 允许手动触发
 
 env:
@@ -35,7 +35,7 @@ jobs:
         with:
           images: ${{ env.IMAGE_NAME }}
           tags: |
-            type=ref,pattern=^refs/heads/master$,value=latest
+            type=ref,event=branch,pattern=master,value=latest
             type=sha,format=short
 
       - name: Build and push Docker image
