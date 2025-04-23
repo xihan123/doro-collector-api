@@ -22,12 +22,9 @@ RUN adduser \
     --uid "${UID}" \
     appuser
 
-ARG PIP_INDEX_URL=https://mirrors.xihan.website/repository/pypi/simple
-
 RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=bind,source=requirements.txt,target=requirements.txt \
-    pip install -i $PIP_INDEX_URL --upgrade pip && \
-    pip config set global.index-url $PIP_INDEX_URL && \
+    pip install --upgrade pip && \
     pip install "psycopg[binary,pool]" && \
     pip install -r requirements.txt
 
