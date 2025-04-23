@@ -35,7 +35,7 @@ jobs:
         with:
           images: ${{ env.IMAGE_NAME }}
           tags: |
-            type=branch,pattern=master,value=latest
+            type=ref,pattern=^refs/heads/master$,value=latest
             type=sha,format=short
 
       - name: Build and push Docker image
