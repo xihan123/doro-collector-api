@@ -211,7 +211,7 @@ def download_batch_stickers(
                 response = requests.get(sticker.url)
                 if response.status_code == 200:
                     # 创建一个有意义的文件名
-                    filename = f"{sticker.id}_{sticker.description[:10]}_{sticker.md5[-6:]}.png"
+                    filename = f"{sticker.id[:4]}_{sticker.description[:10]}_{sticker.md5[-6:]}.png"
                     zip_file.writestr(filename, response.content)
             except Exception as e:
                 print(f"下载表情包 {sticker.id} 时出错: {str(e)}")
