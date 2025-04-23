@@ -320,7 +320,7 @@ class StickerService:
                         tx.delete(existing_action)
                         return {
                             "success": True,
-                            "message": "取消点赞成��",
+                            "message": "取消点赞成功",
                             "sticker": db_sticker.as_dict(),
                             "action": None
                         }
