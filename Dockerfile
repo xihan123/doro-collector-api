@@ -12,15 +12,15 @@ rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-ARG UID=10001
-RUN adduser \
-    --disabled-password \
-    --gecos "" \
-    --home "/nonexistent" \
-    --shell "/sbin/nologin" \
-    --no-create-home \
-    --uid "${UID}" \
-    appuser
+#ARG UID=10001
+#RUN adduser \
+#    --disabled-password \
+#    --gecos "" \
+#    --home "/nonexistent" \
+#    --shell "/sbin/nologin" \
+#    --no-create-home \
+#    --uid "${UID}" \
+#    appuser
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=bind,source=requirements.txt,target=requirements.txt \
@@ -28,7 +28,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install "psycopg[binary,pool]" && \
     pip install -r requirements.txt
 
-USER appuser
+#USER appuser
 
 COPY . .
 
