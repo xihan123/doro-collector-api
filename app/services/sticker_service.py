@@ -528,6 +528,48 @@ class StickerService:
             logger.error(f"更新表情包描述时发生错误: {e}")
             return {"success": False, "message": f"操作失败: {str(e)}"}
 
+    def delete_sticker(self, db: Session, identifier: str) -> Dict[str, Any]:
+        """删除表情包"""
+        try:
+            if len(identifier) == 32:  # MD5长度校验
+                db_sticker = db.query(Sticker).filter(Sticker.md5 == identifier).first()
+            else:
+                db_sticker = db.query(Sticker).filter(Sticker.id == identifier).first()
+
+            if not db_sticker:
+                return {"success": False, "message": "表情包不存在"}
+
+            # 删除本地文件
+            if settings.PIC_DIR:
+                file_extension = db_sticker.url.split(".")[-1]
+                file_path = os.path.join(settings.PIC_DIR, f"{db_sticker.md5}.{file_extension}")
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+
+            # 删除数据库记录
+            with transaction_context(db) as tx:
+                # 删除关联的标签
+                for tag in db_sticker.tags:
+                    tag.usage_count -= 1
+                    if tag.usage_count <= 0:
+                        tx.delete(tag)
+
+                # 删除用户行为记录
+                tx.query(UserAction).filter(UserAction.sticker_id == db_sticker.id).delete()
+                # 删除表情包记录
+                tx.delete(db_sticker)
+
+            return {
+                "success": True,
+                "message": "表情包删除成功"
+            }
+        except SQLAlchemyError as e:
+            logger.error(f"删除表情包时发生数据库错误: {e}")
+            return {"success": False, "message": f"数据库操作失败: {str(e)}"}
+        except Exception as e:
+            logger.error(f"删除表情包时发生错误: {e}")
+            return {"success": False, "message": f"操作失败: {str(e)}"}
+
 
 # 创建单例实例
 sticker_service = StickerService()

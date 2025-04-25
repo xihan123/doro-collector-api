@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "DORO表情包收集系统"
     PROJECT_VERSION: str = "1.0.0"
     DEBUG: bool = os.getenv("DEBUG", "False").lower() in ("true", "1", "t")
+    SECRET_KEY: str = os.getenv("SECRET_KEY")
 
     # 服务器配置
     HOST: str = os.getenv("HOST", "0.0.0.0")

@@ -2,7 +2,7 @@ import io
 import zipfile
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, Path, Request, Body
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, Path, Request, Body, Header
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -12,6 +12,13 @@ from app.schemas.sticker import StickerResponse, StickerUpdate, StickerPaginatio
 from app.services.sticker_service import sticker_service
 
 router = APIRouter()
+
+
+async def verify_secret_key(secret_key: str = Header(...)):
+    """验证密钥"""
+    from app.config import settings
+    if secret_key != settings.SECRET_KEY:
+        raise HTTPException(status_code=401, detail="无效的密钥")
 
 
 @router.post("/upload", response_model=UploadResponse)
@@ -241,3 +248,15 @@ def update_sticker_description(
     if not result["success"]:
         raise HTTPException(status_code=404, detail=result["message"])
     return result["sticker"]
+
+
+@router.delete(
+    "/{identifier}",
+    dependencies=[Depends(verify_secret_key)],
+    summary="删除表情包")
+def delete_sticker(identifier: str = Path(..., description="表情包ID或MD5"), db: Session = Depends(get_db)):
+    """删除表情包"""
+    result = sticker_service.delete_sticker(db, identifier)
+    if not result["success"]:
+        raise HTTPException(status_code=404, detail=result["message"])
+    return result
