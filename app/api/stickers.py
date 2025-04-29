@@ -1,4 +1,5 @@
 import io
+import logging
 import zipfile
 from typing import List, Optional
 
@@ -12,6 +13,7 @@ from app.schemas.sticker import StickerResponse, StickerUpdate, StickerPaginatio
 from app.services.sticker_service import sticker_service
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 async def verify_secret_key(secret_key: str = Header(...)):
@@ -260,3 +262,40 @@ def delete_sticker(identifier: str = Path(..., description="表情包ID或MD5"),
     if not result["success"]:
         raise HTTPException(status_code=404, detail=result["message"])
     return result
+
+
+@router.post("/predict")
+async def predict_doro(
+        file: UploadFile = File(..., description="需要预测的图片文件"),
+        db: Session = Depends(get_db)  # 保持与stickers.py相同的依赖注入
+):
+    """
+    DORO表情包预测接口
+
+    接收单个图片文件，返回预测结果
+    """
+    # 验证文件类型
+    content_type = file.content_type.lower()
+    if not content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="只能上传图片文件")
+
+    try:
+        # 读取文件内容
+        contents = await file.read()
+        if not contents:
+            raise HTTPException(status_code=400, detail="文件内容为空")
+
+        # 执行预测
+        from app.services.doro_classifier import doro_classifier
+        prediction = doro_classifier.predict(contents)
+
+        return {
+            "is_doro": bool(prediction["is_doro"]),
+            "confidence": float(prediction["confidence"]),
+            "probabilities": {
+                str(k): float(v) for k, v in prediction.get("probabilities", {}).items()
+            }
+        }
+    except Exception as e:
+        logger.error(f"处理文件 {file.filename} 时发生错误: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"处理文件时发生错误: {str(e)}")
