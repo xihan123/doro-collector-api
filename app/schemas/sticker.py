@@ -60,3 +60,7 @@ class StickerTagUpdate(BaseModel):
 
 class StickerTagsUpdate(BaseModel):
     tags: List[str]
+
+
+class StickerBatchDelete(BaseModel):
+    sticker_ids: List[str]

@@ -578,6 +578,59 @@ class StickerService:
             logger.error(f"删除表情包时发生错误: {e}")
             return {"success": False, "message": f"操作失败: {str(e)}"}
 
+    def batch_delete_stickers(self, db: Session, sticker_ids: List[str]) -> Dict[str, Any]:
+        """批量删除表情包"""
+        try:
+            if not sticker_ids:
+                return {"success": False, "message": "表情包ID列表不能为空"}
+
+            # 查询所有要删除的表情包
+            stickers = db.query(Sticker).filter(Sticker.id.in_(sticker_ids)).all()
+
+            if not stickers:
+                return {"success": False, "message": "未找到指定的表情包"}
+
+            found_ids = {sticker.id for sticker in stickers}
+            not_found_ids = set(sticker_ids) - found_ids
+
+            # 批量删除操作
+            with transaction_context(db) as tx:
+                for sticker in stickers:
+                    # 删除本地文件
+                    if settings.PIC_DIR:
+                        file_extension = sticker.url.split(".")[-1]
+                        file_path = os.path.join(settings.PIC_DIR, f"{sticker.md5}.{file_extension}")
+                        if os.path.exists(file_path):
+                            os.remove(file_path)
+
+                    # 删除关联的标签
+                    for tag in sticker.tags:
+                        tag.usage_count -= 1
+                        if tag.usage_count <= 0:
+                            tx.delete(tag)
+
+                    # 删除用户行为记录
+                    tx.query(UserAction).filter(UserAction.sticker_id == sticker.id).delete()
+                    # 删除表情包记录
+                    tx.delete(sticker)
+
+            result_message = f"成功删除 {len(stickers)} 个表情包"
+            if not_found_ids:
+                result_message += f"，未找到 {len(not_found_ids)} 个表情包（ID: {', '.join(not_found_ids)}）"
+
+            return {
+                "success": True,
+                "message": result_message,
+                "deleted_count": len(stickers),
+                "not_found_ids": list(not_found_ids)
+            }
+        except SQLAlchemyError as e:
+            logger.error(f"批量删除表情包时发生数据库错误: {e}")
+            return {"success": False, "message": f"数据库操作失败: {str(e)}"}
+        except Exception as e:
+            logger.error(f"批量删除表情包时发生错误: {e}")
+            return {"success": False, "message": f"操作失败: {str(e)}"}
+
 
 # 创建单例实例
 sticker_service = StickerService()

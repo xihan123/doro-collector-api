@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.db.database import get_db, get_client_ip
 from app.schemas.sticker import StickerResponse, StickerUpdate, StickerPagination, UploadResponse, \
-    StickerDescriptionUpdate, StickerTagUpdate, StickerTagsUpdate
+    StickerDescriptionUpdate, StickerTagUpdate, StickerTagsUpdate, StickerBatchDelete
 from app.services.sticker_service import sticker_service
 
 router = APIRouter()
@@ -259,6 +259,30 @@ def update_sticker_description(
 def delete_sticker(identifier: str = Path(..., description="表情包ID或MD5"), db: Session = Depends(get_db)):
     """删除表情包"""
     result = sticker_service.delete_sticker(db, identifier)
+    if not result["success"]:
+        raise HTTPException(status_code=404, detail=result["message"])
+    return result
+
+
+@router.delete(
+    "/batch/",
+    dependencies=[Depends(verify_secret_key)],
+    summary="批量删除表情包")
+def batch_delete_stickers(
+        sticker_data: StickerBatchDelete,
+        db: Session = Depends(get_db)
+):
+    """批量删除表情包"""
+    # 直接从模型获取sticker_ids
+    sticker_ids = sticker_data.sticker_ids
+
+    if not sticker_ids:
+        raise HTTPException(status_code=400, detail="表情包ID列表不能为空")
+
+    if len(sticker_ids) > 100:
+        raise HTTPException(status_code=400, detail="一次最多删除100个表情包")
+
+    result = sticker_service.batch_delete_stickers(db, sticker_ids)
     if not result["success"]:
         raise HTTPException(status_code=404, detail=result["message"])
     return result
