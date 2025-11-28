@@ -1,4 +1,4 @@
-SQLAlchemy
+sqlalchemy[asyncio]
 fastapi
 pydantic
 opencv-python
@@ -14,6 +14,6 @@ python-multipart
 opencv-python
 opencv-python-headless
 numpy
-psycopg
+psycopg[binary,pool]
 starlette
 pydantic-settings
