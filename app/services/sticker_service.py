@@ -1,6 +1,7 @@
 import hashlib
 import logging
 import os
+import time
 from typing import List, Dict, Any, Optional, Tuple
 
 from sqlalchemy import desc
@@ -9,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db.database import transaction_context
+from app.models.operation_log import OperationLog
 from app.models.sticker import Sticker
 from app.models.tag import Tag, sticker_tags_association_table
 from app.models.user_action import UserAction
@@ -21,8 +23,14 @@ logger = logging.getLogger(__name__)
 
 
 class StickerService:
-    def create_sticker(self, db: Session, image_bytes: bytes) -> Dict[str, Any]:
-        """处理上传的图片并创建表情包记录"""
+    def create_sticker(
+            self,
+            db: Session,
+            image_bytes: bytes,
+            ip_address: str,
+            user_agent: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """创建表情包记录，包含完整的处理流程"""
         try:
             # 1: 计算MD5
             md5_hash = hashlib.md5(image_bytes).hexdigest()
@@ -33,7 +41,7 @@ class StickerService:
             if existing_sticker:
                 return {
                     "success": False,
-                    "message": "该表情包已存在",
+                    "message": "表情包已存在",
                     "sticker": existing_sticker.as_dict()
                 }
 
@@ -116,6 +124,17 @@ class StickerService:
 
                     # 更新使用计数
                     text_tag.usage_count += 1
+
+                # 记录操作日志
+                operation_log = OperationLog(
+                    ip_address=ip_address,
+                    user_agent=user_agent,
+                    sticker_id=db_sticker.id,
+                    operation='upload',
+                    new_description=description,
+                    operation_time=int(time.time())
+                )
+                tx.add(operation_log)
 
                 return {
                     "success": True,
@@ -512,16 +531,29 @@ class StickerService:
         stickers = db.query(Sticker).filter(Sticker.id.in_(sticker_ids)).all()
         return [sticker.as_dict() for sticker in stickers]
 
-    def update_sticker_description(self, db: Session, sticker_id: int, description: str) -> Dict[str, Any]:
+    def update_sticker_description(self, db: Session, sticker_id: int, description: str, ip_address: str,
+                                   user_agent: Optional[str] = None) -> Dict[str, Any]:
         """更新表情包描述"""
         try:
-            db_sticker = db.query(Sticker).filter(Sticker.id == sticker_id).first()
-            if not db_sticker:
-                return {"success": False, "message": "表情包不存在"}
+            with transaction_context(db) as tx:
+                db_sticker = tx.query(Sticker).filter(Sticker.id == sticker_id).first()
+                if not db_sticker:
+                    return {"success": False, "message": "表情包不存在"}
 
-            db_sticker.description = description
-            db.commit()
-            db.refresh(db_sticker)
+                old_description = db_sticker.description
+                db_sticker.description = description
+
+                # 记录操作日志
+                operation_log = OperationLog(
+                    ip_address=ip_address,
+                    user_agent=user_agent,
+                    sticker_id=str(sticker_id),
+                    operation='update_description',
+                    old_description=old_description,
+                    new_description=description,
+                    operation_time=int(time.time())
+                )
+                tx.add(operation_log)
 
             return {
                 "success": True,
@@ -611,6 +643,8 @@ class StickerService:
 
                     # 删除用户行为记录
                     tx.query(UserAction).filter(UserAction.sticker_id == sticker.id).delete()
+                    # 删除操作日志记录
+                    tx.query(OperationLog).filter(OperationLog.sticker_id == sticker.id).delete()
                     # 删除表情包记录
                     tx.delete(sticker)
 

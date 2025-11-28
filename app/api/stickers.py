@@ -24,35 +24,33 @@ async def verify_secret_key(secret_key: str = Header(...)):
 
 
 @router.post("/upload", response_model=UploadResponse)
-async def upload_sticker(file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def upload_sticker(request: Request, file: UploadFile = File(...), db: Session = Depends(get_db)):
     """上传表情包"""
-    # 检查文件类型
     content_type = file.content_type.lower()
     if not content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="只能上传图片文件")
 
-    # 读取文件内容
-    file_content = await file.read()
-    if not file_content:
-        raise HTTPException(status_code=400, detail="文件内容为空")
+    try:
+        # 读取文件内容
+        contents = await file.read()
+        if not contents:
+            raise HTTPException(status_code=400, detail="文件内容为空")
 
-    # 处理上传
-    result = sticker_service.create_sticker(db, file_content)
+        # 获取客户端信息
+        ip_address = get_client_ip(request)
+        user_agent = request.headers.get("User-Agent")
 
-    if not result["success"]:
-        return UploadResponse(
-            success=False,
-            message=result["message"]
-        )
+        # 调用服务层处理上传
+        result = sticker_service.create_sticker(db, contents, ip_address, user_agent)
 
-    # 转换结果
-    sticker_dict = result["sticker"]
+        if not result["success"]:
+            raise HTTPException(status_code=400, detail=result["message"])
 
-    return UploadResponse(
-        success=True,
-        message="表情包上传成功",
-        sticker=StickerResponse.model_validate(sticker_dict) if sticker_dict else None
-    )
+        return result
+
+    except Exception as e:
+        logger.error(f"处理文件 {file.filename} 时发生错误: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"处理文件时发生错误: {str(e)}")
 
 
 @router.get("/", response_model=StickerPagination)
@@ -239,13 +237,18 @@ def download_batch_stickers(
 
 @router.patch("/{sticker_id}/description")
 def update_sticker_description(
+        request: Request,
         sticker_id: str = Path(..., description="表情包ID"),
         description_update: StickerDescriptionUpdate = Body(...),
         db: Session = Depends(get_db)
 ):
     """修改表情包的描述"""
+    # 获取客户端信息
+    ip_address = get_client_ip(request)
+    user_agent = request.headers.get("User-Agent")
+
     result = sticker_service.update_sticker_description(
-        db, sticker_id, description_update.description
+        db, sticker_id, description_update.description, ip_address, user_agent
     )
     if not result["success"]:
         raise HTTPException(status_code=404, detail=result["message"])
