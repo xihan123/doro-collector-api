@@ -48,11 +48,19 @@ class StickerService:
                     "details": doro_result
                 }
 
-            # 4: 使用AI直接生成描述（同时检测是否有文字）
-            description, has_text = ocr_service.generate_description_with_text_detection(image_bytes)
-            logger.debug(f"OCR识别结果: 描述={description}, 有文字={has_text}")
+            # 4: 使用AI直接生成描述（同时检测是否有文字和内容安全）
+            description, has_text, is_safe = ocr_service.generate_description_with_text_detection(image_bytes)
+            logger.debug(f"OCR识别结果: 描述={description}, 有文字={has_text}, 是否安全={is_safe}")
 
-            # 5: 上传到图床
+            # 5: 检查内容安全性
+            if not is_safe:
+                return {
+                    "success": False,
+                    "message": "表情包内容不安全，涉及血腥、暴力等不友好内容，不予通过",
+                    "details": {"content_safety": "unsafe"}
+                }
+
+            # 6: 上传到图床
             upload_result = image_upload_service.upload_image(image_bytes)
             logger.debug(f"图片上传结果: {upload_result}")
 
