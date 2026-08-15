@@ -1,12 +1,12 @@
 import hashlib
-import os
-import tempfile
-import uuid
-from typing import Dict, Any
+import logging
+from typing import Any, Dict
 
 import requests
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class ImageUploadService:
@@ -22,29 +22,13 @@ class ImageUploadService:
     def upload_image(self, image_bytes: bytes) -> Dict[str, Any]:
         """上传图像到图床服务并返回结果"""
         try:
-            # 创建临时文件
-            temp_file_path = os.path.join(tempfile.gettempdir(), f"{uuid.uuid4()}.png")
-
-            # 保存图像到临时文件
-            with open(temp_file_path, "wb") as f:
-                f.write(image_bytes)
-
-            # 上传图像
-            with open(temp_file_path, "rb") as f:
-                files = {"source": f}
-                data = {"album_id": self.album_id}
-                headers = {"X-API-Key": self.api_key}
-
-                response = requests.post(
-                    self.upload_url,
-                    files=files,
-                    data=data,
-                    headers=headers
-                )
-
-            # 删除临时文件
-            if os.path.exists(temp_file_path):
-                os.remove(temp_file_path)
+            response = requests.post(
+                self.upload_url,
+                files={"source": ("image.png", image_bytes)},
+                data={"album_id": self.album_id},
+                headers={"X-API-Key": self.api_key},
+                timeout=settings.PICB_TIMEOUT
+            )
 
             # 解析响应
             if response.status_code == 200:
@@ -62,7 +46,8 @@ class ImageUploadService:
                         "size": image_data.get("size")
                     }
 
-            # 如果上传失败
+            # 上传失败
+            logger.error(f"图床上传失败: {response.status_code} - {response.text[:200]}")
             return {
                 "success": False,
                 "error": f"上传失败: {response.status_code} - {response.text}",
@@ -71,6 +56,7 @@ class ImageUploadService:
             }
 
         except Exception as e:
+            logger.error(f"图床上传出错: {str(e)}")
             return {
                 "success": False,
                 "error": f"上传过程中出错: {str(e)}",

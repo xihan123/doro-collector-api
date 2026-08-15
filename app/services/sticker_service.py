@@ -2,7 +2,7 @@ import hashlib
 import logging
 import os
 import time
-from typing import List, Dict, Any, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import desc, func
 from sqlalchemy.exc import SQLAlchemyError
@@ -17,7 +17,7 @@ from app.models.user_action import UserAction
 from app.schemas.sticker import StickerUpdate
 from app.services.doro_classifier import doro_classifier
 from app.services.image_upload_service import image_upload_service
-from app.services.ocr_service import ocr_service, VERDICT_SAFE, VERDICT_UNSAFE
+from app.services.ocr_service import VERDICT_SAFE, VERDICT_UNSAFE, ocr_service
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +96,7 @@ class StickerService:
             logger.debug(f"图片上传结果: {upload_result}")
 
             if not upload_result["success"]:
+                logger.error(f"图片上传到图床失败: {upload_result.get('error')}")
                 return {
                     "success": False,
                     "message": "上传到图床失败",
