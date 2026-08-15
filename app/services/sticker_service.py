@@ -4,7 +4,7 @@ import os
 import time
 from typing import List, Dict, Any, Optional, Tuple
 
-from sqlalchemy import desc
+from sqlalchemy import desc, func
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -17,9 +17,13 @@ from app.models.user_action import UserAction
 from app.schemas.sticker import StickerUpdate
 from app.services.doro_classifier import doro_classifier
 from app.services.image_upload_service import image_upload_service
-from app.services.ocr_service import ocr_service
+from app.services.ocr_service import ocr_service, VERDICT_SAFE, VERDICT_UNSAFE
 
 logger = logging.getLogger(__name__)
+
+STATUS_APPROVED = "approved"
+STATUS_PENDING = "pending"
+STATUS_REJECTED = "rejected"
 
 
 class StickerService:
@@ -39,10 +43,21 @@ class StickerService:
             # 2: 检查MD5是否已存在
             existing_sticker = db.query(Sticker).filter(Sticker.md5 == md5_hash).first()
             if existing_sticker:
+                # 待复审/已驳回的不回传数据
+                if existing_sticker.review_status == STATUS_APPROVED:
+                    return {
+                        "success": False,
+                        "message": "表情包已存在",
+                        "sticker": existing_sticker.as_dict()
+                    }
+                if existing_sticker.review_status == STATUS_PENDING:
+                    return {
+                        "success": False,
+                        "message": "该图片已提交，正在等待人工审核"
+                    }
                 return {
                     "success": False,
-                    "message": "表情包已存在",
-                    "sticker": existing_sticker.as_dict()
+                    "message": "该图片未通过审核，无法上传"
                 }
 
             # 3: 使用DORO分类器检查是否为DORO表情包
@@ -56,17 +71,25 @@ class StickerService:
                     "details": doro_result
                 }
 
-            # 4: 使用AI直接生成描述（同时检测是否有文字和内容安全）
-            description, has_text, is_safe = ocr_service.generate_description_with_text_detection(image_bytes)
-            logger.debug(f"OCR识别结果: 描述={description}, 有文字={has_text}, 是否安全={is_safe}")
+            # 4: AI生成描述、检测文字并做内容审核
+            moderation = ocr_service.generate_description_with_text_detection(image_bytes)
+            logger.info(
+                f"AI审核结果: verdict={moderation.verdict}, reason={moderation.reason}, "
+                f"描述={moderation.description}, 有文字={moderation.has_text}"
+            )
 
-            # 5: 检查内容安全性
-            if not is_safe:
+            # 5: 明确违规直接拒绝，拿不准的转人工复审
+            if moderation.verdict == VERDICT_UNSAFE:
                 return {
                     "success": False,
-                    "message": "表情包内容不安全，涉及血腥、暴力等不友好内容，不予通过",
-                    "details": {"content_safety": "unsafe"}
+                    "message": "表情包内容不安全，不予通过",
+                    "details": {"content_safety": "unsafe", "reason": moderation.reason}
                 }
+
+            review_status = STATUS_APPROVED if moderation.verdict == VERDICT_SAFE else STATUS_PENDING
+            review_reason = None if review_status == STATUS_APPROVED else moderation.reason
+            description = moderation.description
+            has_text = moderation.has_text
 
             # 6: 上传到图床
             upload_result = image_upload_service.upload_image(image_bytes)
@@ -94,15 +117,17 @@ class StickerService:
 
             # 7: 创建数据库记录
             with transaction_context(db) as tx:
-                # 创建Sticker对象
+                # md5 统一用本地计算的哈希
                 db_sticker = Sticker(
-                    md5=upload_result["md5"],
+                    md5=md5_hash,
                     url=upload_result["url"],
                     description=description,
                     doro_confidence=float(doro_result["confidence"]),
                     width=upload_result.get("width"),
                     height=upload_result.get("height"),
-                    file_size=upload_result.get("size")
+                    file_size=upload_result.get("size"),
+                    review_status=review_status,
+                    review_reason=review_reason
                 )
 
                 # 保存到数据库
@@ -138,7 +163,8 @@ class StickerService:
 
                 return {
                     "success": True,
-                    "message": "表情包上传成功",
+                    "message": "表情包已提交，等待人工复审后公开"
+                               if review_status == STATUS_PENDING else "表情包上传成功",
                     "sticker": db_sticker.as_dict()
                 }
 
@@ -157,94 +183,128 @@ class StickerService:
                 "details": {"error_type": "processing_error"}
             }
 
-    def get_stickers(
+    def get_sticker(self, db: Session, sticker_id: str) -> Optional[Sticker]:
+        """根据ID获取表情包（仅已公开的）"""
+        return db.query(Sticker).filter(
+            Sticker.id == sticker_id,
+            Sticker.review_status == STATUS_APPROVED
+        ).first()
+
+    def get_random_stickers(self, db: Session, count: int = 1) -> List[Sticker]:
+        """获取随机已公开表情包"""
+        return db.query(Sticker).filter(
+            Sticker.review_status == STATUS_APPROVED
+        ).order_by(func.random()).limit(count).all()
+
+    def get_pending_stickers(
             self,
             db: Session,
             skip: int = 0,
-            limit: int = 20,
-            sort_by: str = "created_at",
-            sort_order: str = "desc",
-            search_query: Optional[str] = None,
-            tags: Optional[List[str]] = None
+            limit: int = 20
     ) -> Tuple[List[Sticker], int]:
-        """获取表情包列表，支持分页、排序和搜索"""
+        """获取待人工复审的表情包队列"""
+        query = db.query(Sticker).filter(Sticker.review_status == STATUS_PENDING)
+        total = query.count()
+        stickers = query.order_by(Sticker.created_at.asc()).offset(skip).limit(limit).all()
+        return stickers, total
+
+    def review_sticker(
+            self,
+            db: Session,
+            sticker_id: str,
+            approve: bool,
+            ip_address: str,
+            user_agent: Optional[str] = None,
+            reason: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """人工复审：批准或驳回，并记录操作日志"""
         try:
-            # 使用安全的属性访问，防止SQL注入
-            allowed_sort_fields = {"created_at", "likes", "dislikes"}
-            if sort_by not in allowed_sort_fields:
-                sort_by = "created_at"
+            with transaction_context(db) as tx:
+                db_sticker = tx.query(Sticker).filter(Sticker.id == sticker_id).first()
+                if not db_sticker:
+                    return {"success": False, "message": "表情包不存在"}
 
-            query = db.query(Sticker)
+                if db_sticker.review_status != STATUS_PENDING:
+                    return {
+                        "success": False,
+                        "message": f"该表情包不在待复审状态（当前状态: {db_sticker.review_status}）"
+                    }
 
-            # 应用搜索条件
-            if search_query:
-                query = query.filter(Sticker.description.ilike(f"%{search_query}%"))
+                old_status = db_sticker.review_status
+                db_sticker.review_status = STATUS_APPROVED if approve else STATUS_REJECTED
+                db_sticker.reviewed_at = int(time.time())
+                if approve:
+                    # 批准后清除复审原因
+                    db_sticker.review_reason = None
+                elif reason:
+                    db_sticker.review_reason = reason[:255]
 
-            # 应用标签过滤
-            if tags:
-                for tag in tags:
-                    query = query.filter(Sticker.tags.contains([tag]))
+                # 记录复审操作日志
+                operation_log = OperationLog(
+                    ip_address=ip_address,
+                    user_agent=user_agent,
+                    sticker_id=str(sticker_id),
+                    operation='review',
+                    old_description=old_status,
+                    new_description=db_sticker.review_status,
+                    operation_time=int(time.time())
+                )
+                tx.add(operation_log)
 
-            # 计算总数
-            total = query.count()
-
-            # 应用排序
-            if sort_order.lower() == "desc":
-                query = query.order_by(desc(getattr(Sticker, sort_by)))
-            else:
-                query = query.order_by(getattr(Sticker, sort_by))
-
-            # 应用分页
-            stickers = query.offset(skip).limit(limit).all()
-
-            return stickers, total
+            return {
+                "success": True,
+                "message": "表情包已通过人工复审并公开" if approve else "表情包已驳回",
+                "sticker": db_sticker.as_dict()
+            }
         except SQLAlchemyError as e:
-            logger.error(f"获取表情包列表时发生数据库错误: {e}")
-            raise
+            logger.error(f"人工复审时发生数据库错误: {e}")
+            return {"success": False, "message": f"数据库操作失败: {str(e)}"}
         except Exception as e:
-            logger.error(f"获取表情包列表时发生错误: {e}")
-            raise
-
-    def get_sticker(self, db: Session, sticker_id: str) -> Optional[Sticker]:
-        """根据ID获取表情包"""
-        return db.query(Sticker).filter(Sticker.id == sticker_id).first()
+            logger.error(f"人工复审时发生错误: {e}")
+            return {"success": False, "message": f"操作失败: {str(e)}"}
 
     def get_popular_tags(
             self, db: Session,
-            limit: int = 10,
-            sort_order: str = "desc"
+            limit: int = 10
     ) -> List[Dict[str, Any]]:
-        """获取热门标签"""
+        """获取热门标签（只统计已公开的表情包）"""
         try:
-            # 基本查询与原来的get_stickers相同
-            query = db.query(Tag.name, Tag.usage_count)
-
-            # 应用排序
-            if sort_order.lower() == "desc":
-                query = query.order_by(desc(getattr(Tag, "usage_count")))
+            count_expr = func.count(sticker_tags_association_table.c.sticker_id)
+            query = (
+                db.query(Tag.name, count_expr)
+                .join(sticker_tags_association_table,
+                      Tag.id == sticker_tags_association_table.c.tag_id)
+                .join(Sticker, Sticker.id == sticker_tags_association_table.c.sticker_id)
+                .filter(Sticker.review_status == STATUS_APPROVED)
+                .group_by(Tag.name)
+                .order_by(desc(count_expr))
+            )
 
             # 应用分页
             tags = query.offset(0).limit(limit).all()
 
             # 处理结果
             result = []
-            for tag in tags:
+            for tag_name, count in tags:
                 result.append({
-                    "tag": tag.name,
-                    "count": tag.usage_count
+                    "tag": tag_name,
+                    "count": count
                 })
 
             return result
         except Exception as e:
-            print(f"获取热门标签时出错: {str(e)}")
+            logger.error(f"获取热门标签时出错: {str(e)}")
             return []
 
-    def add_tag_to_sticker(self, db: Session, sticker_id: int, tag_name: str) -> Dict[str, Any]:
-        """原子性为表情包创建标签"""
+    def add_tag_to_sticker(self, db: Session, sticker_id: str, tag_name: str) -> Dict[str, Any]:
+        """原子性为表情包创建标签（仅限已公开的表情包）"""
         try:
             with transaction_context(db) as tx:
                 # 获取表情包
-                db_sticker = tx.query(Sticker).filter(Sticker.id == sticker_id).first()
+                db_sticker = tx.query(Sticker).filter(
+                    Sticker.id == sticker_id,
+                    Sticker.review_status == STATUS_APPROVED
+                ).first()
                 if not db_sticker:
                     return {"success": False, "message": "表情包不存在"}
 
@@ -275,12 +335,15 @@ class StickerService:
             logger.error(f"创建标签时发生错误: {e}")
             return {"success": False, "message": f"操作失败: {str(e)}"}
 
-    def update_tags_to_sticker(self, db: Session, sticker_id: int, tags: list[str]) -> Dict[str, Any]:
-        """更新表情包的标签"""
+    def update_tags_to_sticker(self, db: Session, sticker_id: str, tags: list[str]) -> Dict[str, Any]:
+        """更新表情包的标签（仅限已公开的表情包）"""
         try:
             with transaction_context(db) as tx:
                 # 获取表情包
-                db_sticker = tx.query(Sticker).filter(Sticker.id == sticker_id).first()
+                db_sticker = tx.query(Sticker).filter(
+                    Sticker.id == sticker_id,
+                    Sticker.review_status == STATUS_APPROVED
+                ).first()
                 if not db_sticker:
                     return {"success": False, "message": "表情包不存在"}
 
@@ -316,7 +379,7 @@ class StickerService:
         """根据MD5获取表情包"""
         return db.query(Sticker).filter(Sticker.md5 == md5).first()
 
-    def update_sticker(self, db: Session, sticker_id: int, sticker_update: StickerUpdate) -> Optional[Sticker]:
+    def update_sticker(self, db: Session, sticker_id: str, sticker_update: StickerUpdate) -> Optional[Sticker]:
         """更新表情包信息"""
         db_sticker = self.get_sticker(db, sticker_id)
         if not db_sticker:
@@ -342,10 +405,13 @@ class StickerService:
         return action.action if action else None
 
     def like_sticker(self, db: Session, sticker_id: str, ip_address: str) -> Dict[str, Any]:
-        """对表情包点赞，使用事务确保原子性"""
+        """对表情包点赞，使用事务确保原子性（仅限已公开的表情包）"""
         try:
             with transaction_context(db) as tx:
-                db_sticker = tx.query(Sticker).filter(Sticker.id == sticker_id).first()
+                db_sticker = tx.query(Sticker).filter(
+                    Sticker.id == sticker_id,
+                    Sticker.review_status == STATUS_APPROVED
+                ).first()
                 if not db_sticker:
                     return {"success": False, "message": "表情包不存在"}
 
@@ -399,11 +465,14 @@ class StickerService:
             logger.error(f"点赞操作错误: {e}")
             return {"success": False, "message": f"操作失败: {str(e)}"}
 
-    def dislike_sticker(self, db: Session, sticker_id: int, ip_address: str) -> Dict[str, Any]:
-        """对表情包点踩"""
+    def dislike_sticker(self, db: Session, sticker_id: str, ip_address: str) -> Dict[str, Any]:
+        """对表情包点踩（仅限已公开的表情包）"""
         try:
             with transaction_context(db) as tx:
-                db_sticker = tx.query(Sticker).filter(Sticker.id == sticker_id).first()
+                db_sticker = tx.query(Sticker).filter(
+                    Sticker.id == sticker_id,
+                    Sticker.review_status == STATUS_APPROVED
+                ).first()
                 if not db_sticker:
                     return {"success": False, "message": "表情包不存在"}
 
@@ -474,8 +543,8 @@ class StickerService:
         if sort_by not in allowed_sort_fields:
             sort_by = "created_at"
 
-        # 基本查询与原来的get_stickers相同
-        query = db.query(Sticker)
+        # 基本查询，只查已公开的
+        query = db.query(Sticker).filter(Sticker.review_status == STATUS_APPROVED)
 
         # 应用搜索条件
         if search_query:
@@ -527,16 +596,22 @@ class StickerService:
         return result, total
 
     def batch_download_stickers(self, db: Session, sticker_ids: List[str]) -> List[Dict[str, Any]]:
-        """获取批量下载的表情包信息"""
-        stickers = db.query(Sticker).filter(Sticker.id.in_(sticker_ids)).all()
+        """获取批量下载的表情包信息（仅限已通过审核的）"""
+        stickers = db.query(Sticker).filter(
+            Sticker.id.in_(sticker_ids),
+            Sticker.review_status == STATUS_APPROVED
+        ).all()
         return [sticker.as_dict() for sticker in stickers]
 
-    def update_sticker_description(self, db: Session, sticker_id: int, description: str, ip_address: str,
+    def update_sticker_description(self, db: Session, sticker_id: str, description: str, ip_address: str,
                                    user_agent: Optional[str] = None) -> Dict[str, Any]:
-        """更新表情包描述"""
+        """更新表情包描述（仅限已公开的表情包）"""
         try:
             with transaction_context(db) as tx:
-                db_sticker = tx.query(Sticker).filter(Sticker.id == sticker_id).first()
+                db_sticker = tx.query(Sticker).filter(
+                    Sticker.id == sticker_id,
+                    Sticker.review_status == STATUS_APPROVED
+                ).first()
                 if not db_sticker:
                     return {"success": False, "message": "表情包不存在"}
 

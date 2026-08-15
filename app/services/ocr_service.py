@@ -1,16 +1,65 @@
 import base64
-from typing import Tuple
+import json
+import logging
+import re
+from typing import NamedTuple, Optional, Tuple
 
 from openai import OpenAI
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
+
+# 内容审核三态结论
+VERDICT_SAFE = "safe"
+VERDICT_UNSAFE = "unsafe"
+VERDICT_REVIEW = "review"
+
+_VALID_VERDICTS = {VERDICT_SAFE, VERDICT_UNSAFE, VERDICT_REVIEW}
+
+_MODERATION_PROMPT = """你是一个表情包内容审核员。请分析这张表情包图片。
+
+【任务】
+1. 提取图片中清晰可读的文字内容，没有文字则填空字符串，不超过10个字
+2. 按下面的标准判定内容安全性
+
+【只有明确包含以下内容才判 unsafe】
+- 色情、裸露或性行为
+- 真实血腥场面、残肢、虐待
+- 煽动仇恨或辱骂攻击特定人群
+- 违法内容（毒品、武器制作、诈骗等）
+
+【以下情形一律判 safe】
+- 普通表情包、梗图、聊天常用图
+- 轻微粗口或调侃，但不针对特定人群
+- 画风搞笑、夸张、奇怪的图片
+- AI生成风格的图片（本站表情包多为AI生成角色，"疑似AI生成"不是违规理由）
+
+【以下情形判 review】
+- 图片模糊、文字潦草，无法确认内容
+- 不确定是否属于上述违规类别
+
+宁可漏放，不可误判：只有确定违规才判 unsafe，拿不准一律判 review。
+
+【输出】只输出JSON，不要输出任何其他内容：
+{"description": "图片中的文字", "has_text": true, "verdict": "safe", "reason": "判定理由，不超过30字"}
+其中 verdict 只能是 "safe"、"unsafe" 或 "review" 之一。"""
+
+
+class ModerationResult(NamedTuple):
+    """审核结果，verdict 取 safe/unsafe/review"""
+    description: str
+    has_text: bool
+    verdict: str
+    reason: str
 
 
 class OCRService:
     def __init__(self):
         self.openai_client = OpenAI(
             api_key=settings.OPENAI_API_KEY,
-            base_url=settings.OPENAI_BASE_URL
+            base_url=settings.OPENAI_BASE_URL,
+            timeout=settings.OPENAI_TIMEOUT,
         )
 
     def detect_text(self, image_bytes: bytes) -> Tuple[bool, str]:
@@ -25,7 +74,7 @@ class OCRService:
 
             # 调用API检测文本
             response = self.openai_client.chat.completions.create(
-                model="Pro/Qwen/Qwen2.5-VL-7B-Instruct",
+                model="Qwen/Qwen3.5-4B",
                 messages=[
                     {
                         "role": "user",
@@ -46,14 +95,14 @@ class OCRService:
                 max_tokens=50
             )
 
-            text = response.choices[0].message.content.strip()
-            print(f'AI OCR返回: {text}')
+            text = (response.choices[0].message.content or "").strip()
+            logger.debug(f'AI OCR返回: {text}')
             has_text = text != "无文字" and len(text) > 0
 
             return has_text, text if has_text else ""
 
         except Exception as e:
-            print(f"AI OCR错误: {str(e)}")
+            logger.error(f"AI OCR错误: {str(e)}")
             return False, ""
 
     def generate_description(self, image_bytes: bytes) -> str:
@@ -61,7 +110,7 @@ class OCRService:
         try:
             return self._ai_describe_image(image_bytes)
         except Exception as e:
-            print(f"描述生成错误: {str(e)}")
+            logger.error(f"描述生成错误: {str(e)}")
             return "野生的doro表情包"
 
     def _ai_describe_image(self, image_bytes: bytes) -> str:
@@ -70,9 +119,9 @@ class OCRService:
             # 将图像转换为base64
             image_base64 = base64.b64encode(image_bytes).decode('utf-8')
 
-            # 调用API生成描述
+            # 调用OpenAI API生成描述
             response = self.openai_client.chat.completions.create(
-                model="Pro/Qwen/Qwen2.5-VL-7B-Instruct",
+                model="Qwen/Qwen3.5-4B",
                 messages=[
                     {
                         "role": "user",
@@ -94,7 +143,7 @@ class OCRService:
             )
 
             # 获取描述
-            description = response.choices[0].message.content.strip()
+            description = (response.choices[0].message.content or "").strip()
 
             # 如果描述太长，截取前10个字
             if len(description) > 10:
@@ -103,23 +152,69 @@ class OCRService:
             return description if description else "野生的doro表情包"
 
         except Exception as e:
-            print(f"AI描述错误: {str(e)}")
+            logger.error(f"AI描述错误: {str(e)}")
             return "野生的doro表情包"
 
-    def generate_description_with_text_detection(self, image_bytes: bytes) -> Tuple[str, bool, bool]:
-        """
-        使用AI一次性生成描述并检测是否有文字，同时进行内容安全检测
-
-        返回: (描述, 是否有文字, 是否安全)
-        """
+    @staticmethod
+    def _extract_json(reply_text: str) -> Optional[dict]:
+        """从模型回复中提取JSON对象，失败返回None"""
+        text = reply_text.strip()
+        # 去掉 markdown 代码块围栏
+        if text.startswith("```"):
+            text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
+            text = re.sub(r"\s*```\s*$", "", text)
+        # 先尝试整体解析
         try:
-            # 转换为base64
-            import base64
+            data = json.loads(text)
+            if isinstance(data, dict):
+                return data
+        except json.JSONDecodeError:
+            pass
+        # 再截取第一个 { 到最后一个 } 之间解析
+        start, end = text.find("{"), text.rfind("}")
+        if start != -1 and end > start:
+            try:
+                data = json.loads(text[start:end + 1])
+                if isinstance(data, dict):
+                    return data
+            except json.JSONDecodeError:
+                pass
+        return None
+
+    @staticmethod
+    def _to_bool(value, default: bool = False) -> bool:
+        """归一化模型返回的布尔值"""
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            v = value.strip().lower()
+            if v in ("true", "yes", "是", "1"):
+                return True
+            if v in ("false", "no", "否", "0"):
+                return False
+        if isinstance(value, (int, float)) and value in (0, 1):
+            return bool(value)
+        return default
+
+    @staticmethod
+    def _normalize_verdict(value) -> str:
+        """归一化审核结论，无法识别的按 review 处理"""
+        if isinstance(value, str):
+            v = value.strip().lower()
+            if v in _VALID_VERDICTS:
+                return v
+            # 常见同义写法
+            if v in ("uncertain", "unsure", "unknown"):
+                return VERDICT_REVIEW
+        return VERDICT_REVIEW
+
+    def generate_description_with_text_detection(self, image_bytes: bytes) -> ModerationResult:
+        """使用AI生成描述、检测文字并做内容审核，拿不准或调用失败返回 review"""
+        try:
             image_base64 = base64.b64encode(image_bytes).decode('utf-8')
 
-            # 调用OpenAI API生成描述、检测文字和安全性
             response = self.openai_client.chat.completions.create(
-                model="Pro/Qwen/Qwen2.5-VL-7B-Instruct",
+                model="Qwen/Qwen3.5-4B",
                 messages=[
                     {
                         "role": "user",
@@ -132,59 +227,53 @@ class OCRService:
                             },
                             {
                                 "type": "text",
-                                "text": "请分析这个表情包的以下内容：\n1. 提取表情包中的文字内容（不超过10个字）\n2. 判断表情包中是否包含可识别的文字\n3. 评估表情包内容是否安全（是否包含血腥、暴力、色情等不友好内容，以及是否包含AI生成的字眼）\n\n请回复JSON格式，包含三个字段：\n- \"description\": 表情包文本内容，不超过10个字\n- \"has_text\": 布尔值，表示表情包中是否包含可识别的文字\n- \"is_safe\": 布尔值，表示表情包内容是否安全（不包含血腥、暴力、色情、AI生成等不良内容）"
+                                "text": _MODERATION_PROMPT
                             }
                         ]
                     }
                 ],
-                max_tokens=150
+                max_tokens=300,
+                temperature=0.1,
             )
 
-            # 解析回复
-            import json
-            import re
+            reply_text = (response.choices[0].message.content or "").strip()
+            json_data = self._extract_json(reply_text)
 
-            # 获取回复内容并尝试提取JSON
-            reply_text = response.choices[0].message.content.strip()
+            if json_data is None:
+                logger.warning(f"AI审核回复不是有效JSON，转人工复审: {reply_text[:200]}")
+                return ModerationResult(
+                    description="野生的doro表情包", has_text=False,
+                    verdict=VERDICT_REVIEW, reason="AI回复无法解析，需人工确认"
+                )
 
-            # 使用正则表达式从回复中提取JSON部分
-            json_match = re.search(r'({.*})', reply_text, re.DOTALL)
-            if json_match:
-                try:
-                    json_data = json.loads(json_match.group(1))
-                    description = json_data.get("description", "野生的doro表情包")
-                    has_text = json_data.get("has_text", False)
-                    is_safe = json_data.get("is_safe", False)  # 新增安全检测字段
-                except json.JSONDecodeError:
-                    # 如果JSON解析失败，使用默认值
-                    description = "野生的doro表情包"
-                    has_text = False
-                    is_safe = False
-            else:
-                # 如果没有找到JSON格式，直接使用回复作为描述
-                description = reply_text[:10] if len(reply_text) > 10 else reply_text
-                has_text = "文字" in reply_text or "字" in reply_text
-                # 通过关键词判断安全性
-                unsafe_keywords = ['血腥', '暴力', '色情', '不友好', '不安全', 'AI生成', 'AI', '生成']
-                is_safe = not any(keyword in reply_text for keyword in unsafe_keywords)
-
-            # 确保描述不为空
-            if not description or description.strip() == "" or description == "无":
+            description = json_data.get("description", "")
+            if not isinstance(description, str):
+                description = ""
+            description = description.strip()
+            if description in ("", "无"):
                 description = "野生的doro表情包"
-
-            # 限制描述长度
             if len(description) > 10:
                 description = description[:10]
 
-            # 如果内容不安全，返回特定的描述
-            if not is_safe:
-                description = "内容不安全的doro表情包"
+            has_text = self._to_bool(json_data.get("has_text"), default=False)
+            verdict = self._normalize_verdict(json_data.get("verdict"))
+            reason = json_data.get("reason", "")
+            if not isinstance(reason, str):
+                reason = ""
+            reason = reason.strip()[:100]
 
-            return description, has_text, is_safe
+            logger.info(f"AI审核结果: verdict={verdict}, reason={reason}, description={description}")
+            return ModerationResult(
+                description=description, has_text=has_text,
+                verdict=verdict, reason=reason
+            )
 
         except Exception as e:
-            print(f"生成描述时出错: {str(e)}")
-            return "野生的doro表情包", False, False
+            logger.error(f"AI审核服务调用失败: {str(e)}")
+            return ModerationResult(
+                description="野生的doro表情包", has_text=False,
+                verdict=VERDICT_REVIEW, reason=f"AI服务调用失败: {str(e)[:80]}"
+            )
 
 
 # 创建单例实例

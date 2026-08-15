@@ -1,5 +1,6 @@
 import io
 import logging
+import secrets
 import zipfile
 from typing import List, Optional
 
@@ -19,13 +20,13 @@ logger = logging.getLogger(__name__)
 async def verify_secret_key(secret_key: str = Header(...)):
     """验证密钥"""
     from app.config import settings
-    if secret_key != settings.SECRET_KEY:
+    if not settings.SECRET_KEY or not secrets.compare_digest(str(secret_key), str(settings.SECRET_KEY)):
         raise HTTPException(status_code=401, detail="无效的密钥")
 
 
 @router.post("/upload", response_model=UploadResponse)
 async def upload_sticker(request: Request, file: UploadFile = File(...), db: Session = Depends(get_db)):
-    """上传表情包"""
+    """上传表情包（审核拿不准的转人工复审）"""
     content_type = file.content_type.lower()
     if not content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="只能上传图片文件")
@@ -48,6 +49,9 @@ async def upload_sticker(request: Request, file: UploadFile = File(...), db: Ses
 
         return result
 
+    except HTTPException:
+        # 业务拒绝直接透传
+        raise
     except Exception as e:
         logger.error(f"处理文件 {file.filename} 时发生错误: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"处理文件时发生错误: {str(e)}")
@@ -192,7 +196,7 @@ def update_tags_to_sticker(
 
 @router.post("/download/batch/")
 def download_batch_stickers(
-        sticker_ids: List[int],
+        sticker_ids: List[str],
         db: Session = Depends(get_db)
 ):
     """批量下载表情包"""
@@ -253,6 +257,72 @@ def update_sticker_description(
     if not result["success"]:
         raise HTTPException(status_code=404, detail=result["message"])
     return result["sticker"]
+
+
+@router.get(
+    "/review/pending/",
+    response_model=StickerPagination,
+    dependencies=[Depends(verify_secret_key)],
+    summary="获取待人工复审的表情包队列")
+def get_pending_reviews(
+        db: Session = Depends(get_db),
+        page: int = Query(1, ge=1, description="页码"),
+        size: int = Query(20, ge=1, le=100, description="每页数量")
+):
+    """获取等待人工复审的表情包列表"""
+    skip = (page - 1) * size
+    stickers, total = sticker_service.get_pending_stickers(db=db, skip=skip, limit=size)
+    pages = (total + size - 1) // size
+
+    return StickerPagination(
+        total=total,
+        items=[s.as_dict() for s in stickers],
+        page=page,
+        size=size,
+        pages=pages
+    )
+
+
+@router.post(
+    "/review/{sticker_id}/approve",
+    dependencies=[Depends(verify_secret_key)],
+    summary="人工复审通过表情包")
+def approve_sticker(
+        request: Request,
+        sticker_id: str = Path(..., description="表情包ID"),
+        db: Session = Depends(get_db)
+):
+    """将通过人工复审的表情包标记为公开"""
+    result = sticker_service.review_sticker(
+        db, sticker_id, approve=True,
+        ip_address=get_client_ip(request),
+        user_agent=request.headers.get("User-Agent")
+    )
+    if not result["success"]:
+        raise HTTPException(status_code=404, detail=result["message"])
+    return result
+
+
+@router.post(
+    "/review/{sticker_id}/reject",
+    dependencies=[Depends(verify_secret_key)],
+    summary="人工复审驳回表情包")
+def reject_sticker(
+        request: Request,
+        sticker_id: str = Path(..., description="表情包ID"),
+        reason: Optional[str] = Body(None, description="驳回原因"),
+        db: Session = Depends(get_db)
+):
+    """驳回待复审的表情包"""
+    result = sticker_service.review_sticker(
+        db, sticker_id, approve=False,
+        ip_address=get_client_ip(request),
+        user_agent=request.headers.get("User-Agent"),
+        reason=reason
+    )
+    if not result["success"]:
+        raise HTTPException(status_code=404, detail=result["message"])
+    return result
 
 
 @router.delete(
@@ -323,6 +393,8 @@ async def predict_doro(
                 str(k): float(v) for k, v in prediction.get("probabilities", {}).items()
             }
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"处理文件 {file.filename} 时发生错误: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"处理文件时发生错误: {str(e)}")

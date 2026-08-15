@@ -25,6 +25,11 @@ class Sticker(Base):
     width = Column(Integer, nullable=True)
     height = Column(Integer, nullable=True)
     file_size = Column(Integer, nullable=True)
+    # 审核状态: approved=已公开 / pending=待人工复审 / rejected=已驳回
+    review_status = Column(String(20), nullable=False, default="approved",
+                           server_default="approved", index=True)
+    reviewed_at = Column(BigInteger, nullable=True)
+    review_reason = Column(String(255), nullable=True)
 
     # 将模型实例转换为字典
     def as_dict(self):
@@ -41,5 +46,7 @@ class Sticker(Base):
             "tags": [tag.name for tag in self.tags],
             "width": self.width,
             "height": self.height,
-            "file_size": self.file_size
+            "file_size": self.file_size,
+            "review_status": self.review_status,
+            "review_reason": self.review_reason
         }

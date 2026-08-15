@@ -3,8 +3,8 @@ from sqlalchemy.dialects.postgresql import ENUM
 
 from app.db.database import Base
 
-# 定义操作类型枚举
-operation_type = ENUM('upload', 'update_description', name='operation_type')
+# 'review' 取值需配合 main.py 启动时的 ALTER TYPE
+operation_type = ENUM('upload', 'update_description', 'review', name='operation_type')
 
 
 class OperationLog(Base):

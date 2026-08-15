@@ -31,6 +31,8 @@ class StickerResponse(StickerBase):
     created_at: datetime
     likes: int = 0
     dislikes: int = 0
+    review_status: str = "approved"
+    review_reason: Optional[str] = None
 
     class Config:
         from_attributes = True

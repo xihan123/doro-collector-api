@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 
 from app.api import stickers
 from app.config import settings
@@ -25,6 +26,25 @@ logger = logging.getLogger(__name__)
 Base.metadata.create_all(bind=engine)
 
 
+def upgrade_schema():
+    """幂等升级已有表结构，create_all 不会修改已存在的表"""
+    statements = [
+        "ALTER TABLE stickers ADD COLUMN IF NOT EXISTS review_status VARCHAR(20) NOT NULL DEFAULT 'approved'",
+        "ALTER TABLE stickers ADD COLUMN IF NOT EXISTS reviewed_at BIGINT",
+        "ALTER TABLE stickers ADD COLUMN IF NOT EXISTS review_reason VARCHAR(255)",
+        "CREATE INDEX IF NOT EXISTS ix_stickers_review_status ON stickers (review_status)",
+        # 原生 ENUM 的新取值需单独 ALTER TYPE
+        "ALTER TYPE operation_type ADD VALUE IF NOT EXISTS 'review'",
+    ]
+    # ALTER TYPE 需在自动提交事务外执行
+    with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+        for stmt in statements:
+            try:
+                conn.execute(text(stmt))
+            except Exception as e:  # 单条失败不阻断启动
+                logger.warning(f"数据库结构升级语句执行失败（可能已存在）: {stmt} -> {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用程序生命周期管理"""
@@ -34,6 +54,7 @@ async def lifespan(app: FastAPI):
     # 创建数据库表
     logger.info("初始化数据库")
     Base.metadata.create_all(bind=engine)
+    upgrade_schema()
 
     # 确保临时目录存在
     os.makedirs(settings.TEMP_DIR, exist_ok=True)
