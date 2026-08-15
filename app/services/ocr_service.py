@@ -92,7 +92,7 @@ class OCRService:
                         ]
                     }
                 ],
-                max_tokens=50
+                max_tokens=300
             )
 
             text = (response.choices[0].message.content or "").strip()
@@ -139,7 +139,7 @@ class OCRService:
                         ]
                     }
                 ],
-                max_tokens=50
+                max_tokens=300
             )
 
             # 获取描述
@@ -232,8 +232,8 @@ class OCRService:
                         ]
                     }
                 ],
-                max_tokens=300,
-                temperature=0.1,
+                max_tokens=1000,
+                temperature=0,
             )
 
             reply_text = (response.choices[0].message.content or "").strip()
